@@ -1,0 +1,17 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.example
+.*
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+backend/.venv
+backend/tests
+backend/requirements-dev.txt
+backend/pytest.ini
+frontend/node_modules
+frontend/dist
+docker-compose.yml
+*.md
