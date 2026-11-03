@@ -77,7 +77,9 @@ def classify(status: int, body: dict) -> tuple[Reason, bool]:
     err = (body or {}).get("error", {}) if isinstance(body, dict) else {}
     msg = str(err.get("message", "")).lower()
     st = str(err.get("status", "")).upper()
-    if status == 402 or "billing" in msg and status in (400, 403, 429):
+    # Billing is 402, or 400/403 that cite billing (Google's API-errors page). A 429 is a quota or rate limit, never billing,
+    # even though Gemini's free-tier text says "check your plan and billing details": that quota is per model, so fall back.
+    if status == 402 or "billing" in msg and status in (400, 403):
         return Reason.LLM_BILLING, False
     if status in (401, 403) or st in ("PERMISSION_DENIED", "UNAUTHENTICATED") or "api key not valid" in msg or "api_key_invalid" in msg:
         return Reason.LLM_AUTH, False

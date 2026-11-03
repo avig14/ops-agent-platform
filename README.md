@@ -62,7 +62,7 @@ The app still works without `GEMINI_API_KEY`. Extraction falls back to a rule-ba
 ### Tests
 
 ```bash
-cd backend && .venv/Scripts/python -m pytest        # 392 tests, needs the dev Postgres
+cd backend && .venv/Scripts/python -m pytest        # 431 tests, needs the dev Postgres (frontend: 223 vitest tests)
 cd frontend && npm run typecheck && npm run lint && npm test && npm run build
 ```
 
@@ -109,6 +109,18 @@ LLM and data outages, unauthorized access, communication failure, contradicting 
 multi-issue requests. Admin has chaos switches (LLM 402/429/503/timeout/garbage, mail faults) and a clock offset to demo
 approval deadlines.
 
+**Retrying a degraded case.** When the AI was down, the case is still built from rules, flagged, and given no spend plan.
+"Retry the analysis" (case owner or regional approver) re-reads the original request, replies and revisions with the AI:
+
+- All-or-nothing. If any message still fails, nothing changes: no new version, no new approval round. The screen says so.
+- A value a person already corrected or confirmed is never overwritten. Same-value AI fields only gain evidence and confidence.
+- The approval deadline does not restart. A retry cannot buy approvers more time.
+- Refused once any approver has approved in the current round, in finished or running states, for split child cases, and
+  when the request now reads as several issues. Refusals are audited.
+- If every model circuit is open, no AI call is made. A per-case cooldown (`RETRY_COOLDOWN_S`, default 60) limits churn.
+- After a recovery, policy runs again. A zero-spend, low or medium risk case may then clear without a human. This is the
+  normal policy rule, not a retry shortcut.
+
 ## Evaluation
 
 `python -m app.evals.run` replays recorded model answers with zero API calls. `--live` calls Gemini and re-records.
@@ -133,11 +145,14 @@ Results are in `backend/app/evals/results/latest.json` and on the Admin page. Re
 - Risk and recommendation quality are checked by deterministic rules, not by an LLM judge.
 - The audit table is protected by a trigger. A separate INSERT-only database role is not created.
 - A message already in `sending` cannot be recalled if its plan is cancelled. Closure checklist items cannot be un-ticked.
-- Gemini free-tier limits change. The gateway budget (5 requests a minute, 300 a day) is conservative and configurable.
+- Gemini free-tier limits change and are per model. A live check showed a free-tier cap of 20 requests a day on the main
+  model, far below the gateway budget (5 a minute, 300 a day), so the chain falls back to the next model. A busy demo day
+  needs a billed key or fewer live cases.
 - `ENABLE_CHAOS` and `ENABLE_CLOCK_OFFSET` default to on because the demo needs them. Turn them off for real use.
+- Retry is manual. The in-flight guard is per process, so it assumes one app instance. Split child cases cannot be retried.
 - The UI is plain tokenized CSS. The original plan said Tailwind; it was not used.
 
 ## Configuration
 
 See `.env.example`. Important: `DATABASE_URL`, `GEMINI_API_KEY`, `JWT_SECRET` (32+ bytes, required when
-`APP_ENV=prod`), `LOOP_IDLE_S` (slows background sweeps while nobody uses the app, so a free hosted Postgres can sleep).
+`APP_ENV=prod`), `LOOP_IDLE_S` (slows background sweeps while nobody uses the app, so a free hosted Postgres can sleep), `RETRY_COOLDOWN_S` (minimum seconds between "Retry the analysis" clicks per case).

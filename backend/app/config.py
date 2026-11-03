@@ -24,8 +24,14 @@ def _load_dotenv() -> dict[str, str]:
 _DOTENV = _load_dotenv()
 
 
+def _tidy(v: str | None) -> str:
+    """Real env vars get the same clean-up as .env lines. `docker run --env-file` keeps quotes and spaces as typed,
+    and a key like ` "abc"` is an illegal HTTP header value."""
+    return (v or "").strip().strip("\"'").strip()
+
+
 def _get(name: str, default: str = "") -> str:
-    return os.environ.get(name) or _DOTENV.get(name) or default
+    return _tidy(os.environ.get(name)) or _DOTENV.get(name) or default
 
 
 @dataclass(frozen=True)
@@ -50,6 +56,7 @@ class Settings:
     # Idle > active lets a hosted free Postgres sleep (see app/activity.py). Default idle = active = old behaviour.
     loop_interval_s: float = field(default_factory=lambda: max(1.0, float(_get("LOOP_INTERVAL_S", "5"))))
     loop_idle_s: float = field(default_factory=lambda: max(1.0, float(_get("LOOP_IDLE_S", "5"))))
+    retry_cooldown_s: float = field(default_factory=lambda: max(0.0, float(_get("RETRY_COOLDOWN_S", "60"))))   # min gap between "retry analysis" clicks per case
 
 
 settings = Settings()

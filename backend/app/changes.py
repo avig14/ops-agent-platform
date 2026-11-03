@@ -14,13 +14,15 @@ REPLANNING. A human value is never overwritten by re-extraction. Refusals are au
 """
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 from psycopg.types.json import Jsonb
 
-from . import audit, auth, db, orchestrator, outbox
+from . import audit, auth, db, extract, orchestrator, outbox
 from .approvals import Denied
 from .codes import Reason
+from .config import settings
 from .extract import FIELDS, NUMERIC, run_intake, to_decimal
 from .orchestrator import _effective_intent, agent_message, transition
 from .schemas import IngestIn, Role, UserOut
@@ -96,26 +98,33 @@ def _check_actor(user: UserOut, case: dict) -> None:
 # ───────────────────────── the versioning primitive ─────────────────────────
 async def _bump(case_id: str, user: UserOut | None, *, actor_type: str, actor_id: str, summary: str, reason: Reason,
                 updates_fn, intake_patch: dict | None = None, case_sets: dict | None = None, allowed=REVISABLE,
-                new_intent: str | None = None) -> dict | None:
+                new_intent: str | None = None, force: bool = False, force_intent: str | None = None,
+                refuse_if_approved: bool = False) -> dict | None:
     """Make version N+1. `updates_fn(old_rows) -> (updates, diff, extra)`; no updates and no intent change => nothing happens
-    (returns None). `new_intent` only replaces a vague intent (unclear/other); a concrete intent is never rewritten by a message."""
+    (returns None) unless `force`. `new_intent` only replaces a vague intent (unclear/other); a concrete intent is never rewritten
+    by a message. `force_intent` is for a retry that replaces an intent the rule-based fallback only guessed. `refuse_if_approved`
+    is checked inside the locked txn, so an approval that lands first always wins over a retry."""
     async with db.pool.connection() as c:
         async with c.transaction():
             case = await _load(c, case_id, lock=True)
             if case["status"] not in allowed:
                 raise Denied(409, *refusal(case["status"]))
             old_v = case["version"]
+            was_approved = await _approval_started(c, case)
+            if refuse_if_approved and was_approved:
+                raise Denied(409, "an approver has already acted on this case; send a revision instead of retrying",
+                             Reason.WORKFLOW_CONCURRENCY_CONFLICT)
             old = {r["name"]: r for r in await (await c.execute(
                 "SELECT * FROM extracted_fields WHERE case_id=%s AND version=%s", (case_id, old_v))).fetchall()}
             updates, diff, extra = updates_fn(old)
-            retype = new_intent if (new_intent and case["intent"] in VAGUE_INTENTS and new_intent != case["intent"]) else None
-            if not updates and not retype:
+            retype = force_intent if (force_intent and force_intent != case["intent"]) else (
+                new_intent if (new_intent and case["intent"] in VAGUE_INTENTS and new_intent != case["intent"]) else None)
+            if not updates and not retype and not force:
                 return None
             if retype:
                 diff = {**diff, "intent": {"from": case["intent"], "to": retype}}
                 case_sets = {**(case_sets or {}), "intent": retype}
             new_v = old_v + 1
-            was_approved = await _approval_started(c, case)
             nr = await _next_round(c, case_id)
             await c.execute(
                 "INSERT INTO extracted_fields(case_id,version,name,value,quote,confidence,signals,state,corrected_by) "
@@ -147,11 +156,11 @@ async def _bump(case_id: str, user: UserOut | None, *, actor_type: str, actor_id
                                          f"{voided} unsent message(s) about the old plan cancelled", reason=Reason.WORKFLOW_REVISED, refs={"voided": voided})
             await transition(case_id, REVISABLE, "REPLANNING", actor_type, actor_id, f"re-analysing after: {summary}", conn=c,
                              sets={"needs_human": True, **(case_sets or {})})
-    return {"version": new_v, "round": nr, "was_approved": was_approved, "diff": diff}
+    return {"version": new_v, "round": nr, "was_approved": was_approved, "diff": diff, "deadline_at": case["deadline_at"]}
 
 
-async def _reanalyse(case_id: str, r: dict, wait: bool) -> None:
-    coro = orchestrator.safe_analyze(case_id, round_no=r["round"], revision_after_approval=r["was_approved"])
+async def _reanalyse(case_id: str, r: dict, wait: bool, keep_deadline=None) -> None:
+    coro = orchestrator.safe_analyze(case_id, round_no=r["round"], revision_after_approval=r["was_approved"], keep_deadline=keep_deadline)
     if wait:
         await coro
     else:
@@ -379,21 +388,164 @@ async def resolve_conflict(user: UserOut, case: dict, field: str, source: str, w
     return {"status": await _status(cid)}
 
 
+RETRYABLE = {"NEEDS_INFO", "AWAITING_APPROVAL"}          # never ESCALATED (would reset the SLA) or APPROVED (spend in motion)
+MAX_RETRY_MESSAGES = 5
+RETRY_COOLDOWN_S = settings.retry_cooldown_s             # module constant so tests can change it (Settings is frozen)
+_RETRYING: set[str] = set()                              # one retry per case at a time (this process)
+
+
+async def _cooldown_left(cid: str) -> int:
+    """Seconds until another retry is allowed. Counts retries that ran (success or still degraded), not refusals."""
+    async with db.pool.connection() as c:
+        row = await (await c.execute(
+            "SELECT extract(epoch FROM (now() - max(ts))) AS ago FROM audit_log "
+            "WHERE chain_key=%s AND action='retry_analysis' AND outcome IN ('success','degraded')", (cid,))).fetchone()
+    if row is None or row["ago"] is None:
+        return 0
+    return max(0, math.ceil(RETRY_COOLDOWN_S - float(row["ago"])))
+
+
+def _ai_unavailable() -> bool:
+    """True while every model's circuit is open: a re-run now could only fail again, so do not churn the approvals."""
+    brs = list(extract.gateway.breakers.values())
+    return bool(brs) and all(b.state == "open" for b in brs)
+
+
+def _failure_reason(failures: list[str]) -> Reason | None:
+    for f in failures:
+        try:
+            return Reason(f.split(":")[-1])
+        except ValueError:
+            continue
+    return None
+
+
 async def retry(user: UserOut, case: dict, wait: bool) -> dict:
+    """A10: re-run a degraded analysis after an outage. If the AI extraction was degraded, the source messages are extracted
+    again first; the result only replaces what the fallback guessed. Human values, the approval deadline and every audit row stay."""
     cid = case["id"]
     _check_actor(user, case)
+    if cid in _RETRYING:
+        raise Denied(409, "a retry is already running for this case", Reason.WORKFLOW_CONCURRENCY_CONFLICT)
+    _RETRYING.add(cid)
+    try:
+        return await _retry(user, cid, wait)
+    finally:
+        _RETRYING.discard(cid)
+
+
+async def _retry(user: UserOut, cid: str, wait: bool) -> dict:
     async with db.pool.connection() as c:
         cur = await _load(c, cid)
-        nr = await _next_round(c, cid)
-    if cur["status"] != "NEEDS_INFO":
-        raise Denied(409, f"case is {cur['status']}; nothing to retry", Reason.WORKFLOW_CONCURRENCY_CONFLICT)
-    await audit.write(cid, "human", user.id, "retry_analysis", "success", "analysis re-run requested")
-    coro = orchestrator.safe_analyze(cid, round_no=nr)
-    if wait:
-        await coro
-    else:
-        orchestrator.spawn(coro)
-    return {"status": await _status(cid)}
+        facts = ((await (await c.execute("SELECT facts FROM case_versions WHERE case_id=%s AND version=%s", (cid, cur["version"]))).fetchone()) or {}).get("facts") or {}
+    status = cur["status"]
+    if status not in RETRYABLE:
+        if status in ("ESCALATED", "APPROVED"):
+            raise Denied(409, f"case is {status}: approval is already under way, so the analysis cannot be re-run; send a revision instead",
+                         Reason.WORKFLOW_CONCURRENCY_CONFLICT)
+        raise Denied(409, *refusal(status))
+    intake = facts.get("intake") or {}
+    intake_degraded = bool(intake.get("degraded"))
+    if status == "AWAITING_APPROVAL" and not cur["degraded"]:
+        raise Denied(409, "the analysis is complete and nothing is degraded; there is nothing to retry", Reason.WORKFLOW_CONCURRENCY_CONFLICT)
+    if cur["parent_id"] and intake_degraded:
+        raise Denied(409, "this case is part of a split request; retry cannot re-read it", Reason.WORKFLOW_CONCURRENCY_CONFLICT)
+    left = await _cooldown_left(cid)
+    if left > 0:
+        raise Denied(429, f"a retry just ran; try again in {left} s", Reason.WORKFLOW_CONCURRENCY_CONFLICT)
+
+    if not intake_degraded:
+        if status == "NEEDS_INFO":                                        # still waiting on a human: re-validate, nothing to supersede
+            async with db.pool.connection() as c:
+                nr = await _next_round(c, cid)
+            await audit.write(cid, "human", user.id, "retry_analysis", "success", "analysis re-run requested")
+            coro = orchestrator.safe_analyze(cid, round_no=nr)
+            if wait:
+                await coro
+            else:
+                orchestrator.spawn(coro)
+            return {"changed": True, "status": await _status(cid)}
+        if _ai_unavailable():                                             # risk/recommendation were degraded and the AI is still down
+            return await _still_degraded(user, cid, ["circuit_open"], Reason.INFRA_CIRCUIT_OPEN)
+        r = await _bump(cid, user, actor_type="human", actor_id=user.id, summary=f"{user.role.value} re-ran the degraded analysis",
+                        reason=Reason.WORKFLOW_REVISED, updates_fn=lambda old: ({}, {}, {"retry": True}), allowed=RETRYABLE,
+                        force=True, refuse_if_approved=True)
+        await audit.write(cid, "human", user.id, "retry_analysis", "success", f"analysis re-run as version {r['version']}", refs={"version": r["version"]})
+        await _reanalyse(cid, r, wait, keep_deadline=r["deadline_at"])
+        return {"changed": True, "version": r["version"], "status": await _status(cid)}
+
+    # AI extraction was degraded: read every source message again. Any still degraded => change nothing at all.
+    async with db.pool.connection() as c:
+        srcs = await (await c.execute(
+            "SELECT s.message_id mid, s.role, m.body FROM case_sources s JOIN source_messages m ON m.id=s.message_id "
+            "WHERE s.case_id=%s AND s.role IN ('origin','reply','revision') ORDER BY (s.role='origin') DESC, m.received_at, m.id LIMIT %s",
+            (cid, MAX_RETRY_MESSAGES))).fetchall()
+    runs = []
+    for s in srcs:
+        res = await run_intake(s["body"], cid)
+        if res.degraded:
+            return await _still_degraded(user, cid, res.failures, _failure_reason(res.failures))
+        if len(res.issues) > 1:
+            raise Denied(409, f"the AI now reads {len(res.issues)} separate problems in this request; please send them as separate requests",
+                         Reason.INGEST_MULTI_ISSUE)
+        runs.append((s, res))
+    origin = runs[0][1]
+    primary = origin.issues[0]
+    wanted = _effective_intent(primary.intent, origin.mode, primary.fields)
+    concrete = None if wanted in VAGUE_INTENTS or wanted in ("cancellation", "multi_issue") else wanted
+    kept_human: list[str] = []
+    kept_existing: list[str] = []
+
+    def fn(old):
+        have = {n: {"state": o["state"], "value": o["value"], "src": (o["signals"] or {}).get("source_message"),
+                    "conf": float(o["confidence"] or 0)}
+                for n, o in old.items() if o["state"] != "dropped" and o["value"] is not None}
+        ups, diff = {}, {}
+        for s, res in runs:
+            src = None if s["role"] == "origin" else s["mid"]
+            for name, f in res.issues[0].fields.items():
+                if not f.usable:
+                    continue
+                signals = {**f.signals, **({"source_message": src} if src else {}), "recovered_by_retry": True}
+                h = have.get(name)
+                if h and h["state"] in ("corrected", "confirmed"):
+                    if not _same(h["value"], f.value):
+                        kept_human.append(name)                           # re-extraction never overwrites a human value
+                    continue
+                if h and _same(h["value"], f.value):                      # same value: keep it, take the better evidence
+                    if f.confidence > h["conf"]:
+                        ups[name] = {"value": h["value"], "quote": f.quote, "confidence": f.confidence, "signals": signals, "state": "ai"}
+                        h["conf"] = f.confidence
+                    continue
+                if h and h["src"] != src:                                 # a different message set this value: this one may not rewrite it
+                    kept_existing.append(name)
+                    continue
+                ups[name] = {"value": f.value, "quote": f.quote, "confidence": f.confidence, "signals": signals, "state": "ai"}
+                diff[name] = {"from": h["value"] if h else None, "to": f.value}
+                have[name] = {"state": "ai", "value": f.value, "src": src, "conf": f.confidence}
+        return ups, diff, {"retry": True, "recovered": True, "kept_human_values": kept_human, "kept_existing_values": kept_existing}
+
+    injected = any(res.injection_flag for _, res in runs)
+    patterns = sorted({p for _, res in runs for p in res.scan.patterns})
+    patch = {"degraded": False, "mode": origin.mode, "failures": origin.failures, "recovered_by_retry": True}
+    if injected:
+        patch.update({"injection": True, "patterns": patterns})
+    rules_guessed = intake.get("mode") == "rules_only"
+    r = await _bump(cid, user, actor_type="human", actor_id=user.id, summary=f"{user.role.value} retried after the AI came back; extraction re-read",
+                    reason=Reason.WORKFLOW_REVISED, updates_fn=fn, intake_patch=patch, case_sets={"injection_flag": True} if injected else None,
+                    allowed=RETRYABLE, new_intent=concrete, force_intent=concrete if rules_guessed else None, force=True, refuse_if_approved=True)
+    await audit.write(cid, "human", user.id, "retry_analysis", "success", f"AI extraction recovered; re-analysed as version {r['version']}",
+                      refs={"version": r["version"], "messages": len(runs), "fields_changed": sorted(r["diff"]), "model": origin.model})
+    await _reanalyse(cid, r, wait, keep_deadline=r["deadline_at"])
+    return {"changed": True, "recovered": True, "version": r["version"], "diff": r["diff"], "kept_human_values": kept_human,
+            "status": await _status(cid)}
+
+
+async def _still_degraded(user: UserOut, cid: str, failures: list[str], reason: Reason | None) -> dict:
+    """The AI is still unavailable: record it and leave the case exactly as it was (no new version, no new approvals)."""
+    await audit.write(cid, "human", user.id, "retry_analysis", "degraded", "retry ran but the AI is still unavailable; nothing changed",
+                      reason=reason, refs={"failures": failures})
+    return {"changed": False, "still_degraded": True, "failures": failures, "status": await _status(cid)}
 
 
 # ───────────────────────── A4: fixing the duplicate call ─────────────────────────

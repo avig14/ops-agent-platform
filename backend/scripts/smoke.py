@@ -39,7 +39,7 @@ def login(c: httpx.Client, email: str) -> dict[str, str]:
 
 
 def main(base: str, with_case: bool) -> int:
-    c = httpx.Client(base_url=base.rstrip("/"), timeout=60, follow_redirects=False)
+    c = httpx.Client(base_url=base.rstrip("/"), timeout=240, follow_redirects=False)   # one live case at 5 requests a minute can take over a minute
     t0 = time.time()
     r = c.get("/health"); check(r.status_code == 200 and r.json() == {"status": "ok"}, "GET /health")
     r = c.get("/ready"); check(r.status_code == 200 and r.json().get("db") == "ok", "GET /ready (database reachable)", r.text[:120])

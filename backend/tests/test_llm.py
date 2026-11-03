@@ -91,6 +91,31 @@ async def test_daily_quota_429_fails_over_without_retry():
     assert r.model == "m2" and f.calls == ["m1", "m2"] and r.failovers == ["m1->m2"]
 
 
+async def test_real_free_tier_daily_quota_text_mentions_billing_but_still_fails_over():
+    """Seen live: the 429 body says 'plan and billing details'. It is a per-model daily quota, so the next model must be tried."""
+    msg = ("You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: "
+           "https://ai.google.dev/gemini-api/docs/rate-limits.\n* Quota exceeded for metric: "
+           "generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: some-flash, "
+           "description: Generate content requests per day limit exceeded on Free Tier.")
+    g, f = make([(429, err_body(429, msg, "RESOURCE_EXHAUSTED")), (200, ok_body({"qty": 3}))])
+    r = await run(g)
+    assert r.model == "m2" and f.calls == ["m1", "m2"] and r.failovers == ["m1->m2"]
+
+
+async def test_429_with_billing_words_and_no_daily_marker_is_still_a_rate_limit_not_billing():
+    g, f = make([(429, err_body(429, "slow down, see your billing page", "RESOURCE_EXHAUSTED"))] * 20, models=("m1",))
+    with pytest.raises(LLMUnavailable) as ei:
+        await run(g)
+    assert ei.value.reason == Reason.LLM_RATE_LIMIT
+
+
+async def test_403_citing_billing_is_still_billing_and_stops_the_chain():
+    g, f = make([(403, err_body(403, "outstanding balance: billing problem", "PERMISSION_DENIED"))])
+    with pytest.raises(LLMUnavailable) as ei:
+        await run(g)
+    assert ei.value.reason == Reason.LLM_BILLING and f.calls == ["m1"]
+
+
 async def test_billing_error_stops_chain_and_is_audited():
     g, f = make([(402, err_body(402, "billing: credit balance too low"))])
     with pytest.raises(LLMUnavailable) as ei:

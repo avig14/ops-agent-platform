@@ -244,6 +244,17 @@ export interface CaseDetail {
   related: Related;
 }
 
+/** What POST /retry answers. `still_degraded` means the AI was still down and nothing was changed. */
+export interface RetryResult {
+  changed: boolean;
+  recovered?: boolean;
+  still_degraded?: boolean;
+  failures?: string[];
+  status?: string;
+  version?: number;
+  kept_human_values?: string[];
+}
+
 /** The case endpoint before it is tidied: `facts` is null until intake has run. See normaliseDetail. */
 export type RawCaseDetail = Omit<CaseDetail, "facts"> & { facts: Facts | null };
 

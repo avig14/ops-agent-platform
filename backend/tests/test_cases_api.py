@@ -26,7 +26,8 @@ class FakeLLM:
         self.intake = out(good_issue())
         self.risk = {"urgency": "High", "impact": "Critical", "risk": "Critical", "reasons": ["380 units short"], "missing_information": []}
         self.down = False
-        self.comms = None            # optional: draft dict -> {"subject", "body"} (the polished wording)
+        self.down_kinds: set[str] = set()   # fail only these agents (intake | risk | recommend | comms | report)
+        self.comms = None           # optional: draft dict -> {"subject", "body"} (the polished wording)
         self.report = None           # optional: facts dict -> summary dict (the reporting agent's wording)
         self.calls: list[str] = []
 
@@ -35,7 +36,7 @@ class FakeLLM:
         kind = ("risk" if "risk analyst" in sys else "recommend" if "operations manager" in sys
                 else "comms" if "copy editor" in sys else "report" if "reporting assistant" in sys else "intake")
         self.calls.append(kind)
-        if self.down:
+        if self.down or kind in self.down_kinds:
             return 503, {"error": {"code": 503, "message": "overloaded", "status": "UNAVAILABLE"}}, {}
         if kind == "comms":
             draft = json.loads(body["contents"][0]["parts"][0]["text"].split("<draft>\n", 1)[1].rsplit("\n</draft>", 1)[0])

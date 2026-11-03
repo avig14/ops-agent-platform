@@ -3,7 +3,7 @@
  * these helpers only explain, so a refusal is never a surprise. Buttons are NOT hidden from people who may try:
  * the platform refuses, records the refusal, and the screen shows why.
  */
-import type { Approval, CaseHead, Role, User } from "../api/types";
+import type { Approval, CaseDetail, CaseHead, Role, User } from "../api/types";
 import { APPROVER_ROLES, roleLabel } from "./labels";
 
 export function isApproverRole(role: Role): boolean {
@@ -20,6 +20,21 @@ export function inRegion(user: User, region: string | null): boolean {
 export function canChangeCase(user: User, c: CaseHead): boolean {
   if (c.requester_id === user.id) return true;
   return isApproverRole(user.role) && inRegion(user, c.region);
+}
+
+/** States where "Retry the analysis" can work. Mirrors RETRYABLE in changes.py. */
+const RETRYABLE = new Set(["NEEDS_INFO", "AWAITING_APPROVAL"]);
+
+/**
+ * Show the retry button only where the server can accept it: the case is degraded, still waiting on people,
+ * and no approver has said yes in the newest round (a retry would undo that decision, so the server refuses).
+ * The server still decides. Cooldown and "AI still down" answers come back as a message.
+ */
+export function canRetryAnalysis(user: User, d: CaseDetail): boolean {
+  const c = d.case;
+  if (!c.degraded || !RETRYABLE.has(c.status) || !canChangeCase(user, c)) return false;
+  const round = d.approvals.length === 0 ? null : Math.max(...d.approvals.map((a) => a.round));
+  return !d.approvals.some((a) => a.round === round && a.status === "approved");
 }
 
 /** Approvers of the case's region run closure steps. Mirrors closure.py. */

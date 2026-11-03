@@ -362,8 +362,9 @@ def _deadline(facts: dict, now: datetime) -> datetime:
 
 
 async def analyze(case_id: str, *, resolutions: dict | None = None, exclude_actions: tuple[str, ...] = (), round_no: int = 1,
-                  prior_rejection: bool = False, revision_after_approval: bool = False) -> None:
-    """Validate > risk > recommend > policy, then persist and move the case. Safe to re-run after a human edit or reply."""
+                  prior_rejection: bool = False, revision_after_approval: bool = False, keep_deadline: datetime | None = None) -> None:
+    """Validate > risk > recommend > policy, then persist and move the case. Safe to re-run after a human edit or reply.
+    `keep_deadline`: a retry after an outage must not hand approvers a fresh clock, so it carries the original deadline over."""
     case = await _case(case_id)
     version = case["version"]
     fields = await load_fields(case_id, version)
@@ -416,7 +417,7 @@ async def analyze(case_id: str, *, resolutions: dict | None = None, exclude_acti
                                abstained=rec.abstained, field_confidence=conf, prior_rejection=prior_rejection,
                                revision_after_approval=revision_after_approval,
                                possible_duplicates=[r["id"] for r in intake_meta.get("related_cases", [])]))
-    deadline = _deadline(facts, now) if pol.requires_human else None
+    deadline = (keep_deadline or _deadline(facts, now)) if pol.requires_human else None
 
     async with db.pool.connection() as c:
         async with c.transaction():

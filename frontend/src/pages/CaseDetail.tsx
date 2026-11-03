@@ -1,18 +1,18 @@
 import { useRef, type KeyboardEvent } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
-import { useCase, useComms, useRetry } from "../api/hooks";
+import { useCase, useComms } from "../api/hooks";
 import type { CaseDetail, User } from "../api/types";
 import { useUser } from "../components/Auth";
-import { ActionError, Boundary, Chip, Notice, Skeleton, StatusChip } from "../components/ui";
+import { Boundary, Chip, Notice, Skeleton, StatusChip } from "../components/ui";
 import { issueCount, pendingDecisions } from "../lib/case";
 import { dueLabel, humanize, timeLeft } from "../lib/format";
 import { FINISHED, RISK_TONE, roleLabel, WORKING } from "../lib/labels";
-import { canChangeCase } from "../lib/permissions";
 import { AnalysisTab } from "./case/AnalysisTab";
 import { ApprovalsTab } from "./case/ApprovalsTab";
 import { AuditTab } from "./case/AuditTab";
 import { ClosureTab } from "./case/ClosureTab";
 import { CommsTab } from "./case/CommsTab";
+import { DegradedNotice } from "./case/DegradedNotice";
 import { IssuesTab } from "./case/IssuesTab";
 import { OverviewTab } from "./case/OverviewTab";
 import { PlanTab } from "./case/PlanTab";
@@ -54,7 +54,6 @@ function CaseView({ detail, user }: { detail: CaseDetail; user: User }) {
   const [params, setParams] = useSearchParams();
   const tab = parseTab(params.get("tab"));
   const comms = useComms(c.id);
-  const retry = useRetry(c.id);
   const listRef = useRef<HTMLDivElement>(null);
 
   function goTo(next: TabKey) {
@@ -90,7 +89,6 @@ function CaseView({ detail, user }: { detail: CaseDetail; user: User }) {
   const counts: Partial<Record<TabKey, number>> = { issues: issueCount(detail), approvals: pending.length, comms: draftCount };
   const due = FINISHED.has(c.status) ? null : timeLeft(c.deadline_at);
   const title = c.title ?? (c.intent ? humanize(c.intent) : "Untitled request");
-  const canRetry = canChangeCase(user, c);
 
   return (
     <>
@@ -124,19 +122,7 @@ function CaseView({ detail, user }: { detail: CaseDetail; user: User }) {
             Those parts were ignored and no fact inside them was used. Nothing was approved or sent because of them. A person should triage the case.
           </Notice>
         ) : null}
-        {c.degraded ? (
-          <Notice tone="person" title="Analysis is incomplete">
-            A dependency was down (the AI model or a data source). No spend is recommended and a person must review. The Audit tab lists exactly what could not be fetched.
-            {canRetry && !FINISHED.has(c.status) ? (
-              <p>
-                <button type="button" className="btn" disabled={retry.isPending} onClick={() => retry.mutate()}>
-                  {retry.isPending ? "Retrying" : "Retry the analysis"}
-                </button>
-              </p>
-            ) : null}
-            <ActionError error={retry.error} what="retry the analysis" />
-          </Notice>
-        ) : null}
+        <DegradedNotice detail={detail} user={user} />
         {c.duplicate_of ? (
           <Notice tone="neutral" title="This is a duplicate">
             <p>

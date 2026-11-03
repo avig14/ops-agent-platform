@@ -5,7 +5,7 @@ import { FINISHED, WORKING } from "../lib/labels";
 import { api, ApiError } from "./client";
 import type {
   Accepted, AuditResponse, AuditVerify, CaseRow, Channel, ClockState, Closure, CommsResponse, DemoUsers, EvalsResponse,
-  LlmStatus, Mailbox, ManagementReport, Narrative, OutboxStats, RawCaseDetail, Scenario, Summary, User,
+  LlmStatus, Mailbox, ManagementReport, Narrative, OutboxStats, RawCaseDetail, RetryResult, Scenario, Summary, User,
 } from "./types";
 
 // ───────────── session ─────────────
@@ -127,7 +127,7 @@ export function useCreateCase() {
 }
 
 /** Run one action against a case, then refresh everything it can change. */
-function useCaseAction<V>(caseId: string, fn: (v: V) => Promise<unknown>) {
+function useCaseAction<V, R = unknown>(caseId: string, fn: (v: V) => Promise<R>) {
   const qc = useQueryClient();
   return useMutation({ mutationFn: fn, onSettled: () => invalidateCase(qc, caseId) });
 }
@@ -163,7 +163,7 @@ export function useLinkDuplicate(id: string) {
 }
 
 export function useRetry(id: string) {
-  return useCaseAction(id, () => api(`${base(id)}/retry`, { method: "POST" }));
+  return useCaseAction(id, () => api<RetryResult>(`${base(id)}/retry`, { method: "POST" }));
 }
 
 export type ClosureAction = "start" | "monitor" | "close" | "summary";
