@@ -15,8 +15,8 @@ from psycopg.types.json import Jsonb
 
 from . import audit, clarify, clock, db, dedupe, outbox, risk as risk_agent, recommend as rec_agent, split, validator
 from .codes import Reason
-from .extract import FIELDS, Field, run_intake
-from .policy import CRITICAL_FIELDS, PolicyInput, evaluate
+from .extract import FIELDS, Field, disagreements, run_intake
+from .policy import CRITICAL_FIELDS, PolicyInput, evaluate, situation_flags
 from .schemas import IngestIn, UserOut
 
 DEFAULT_APPROVAL_SLA = timedelta(hours=4)     # documented assumption when the sender states no deadline
@@ -161,7 +161,12 @@ async def load_fields(case_id: str, version: int) -> dict[str, Field]:
                                    Reason(sig["drop_reason"]) if sig.get("drop_reason") else None, 0.0, sig)
         else:
             human = r["state"] in ("confirmed", "corrected")
-            out[r["name"]] = Field(r["name"], r["value"], r["quote"], "ai", None, 1.0 if human else float(r["confidence"] or 0), r["signals"] or {})
+            sig = dict(r["signals"] or {})
+            if human:
+                sig["human"] = True
+            if r["state"] == "corrected":
+                sig.pop("is_shortfall", None)       # the person typed the number; it means what they meant
+            out[r["name"]] = Field(r["name"], r["value"], r["quote"], "ai", None, 1.0 if human else float(r["confidence"] or 0), sig)
     return out
 
 
@@ -412,11 +417,15 @@ async def analyze(case_id: str, *, resolutions: dict | None = None, exclude_acti
     rec = await rec_agent.recommend(facts, val.inputs_used, val.inputs_total, degraded, case_id, exclude_actions=exclude_actions)
     degraded = degraded or rec.degraded
     conf = {n: f.confidence for n, f in fields.items() if f.usable and n in CRITICAL_FIELDS}
+    disagree = disagreements(fields)
+    chosen_opt = next((o for o in rec.options if o["action"] == rec.recommended_action), None)
+    sit = situation_flags(facts, chosen_opt)
     pol = evaluate(PolicyInput(amount=rec.total_cost, risk_level=rk.level, injection_flag=bool(case["injection_flag"]), degraded=degraded,
                                agent_conflict=rk.conflict, unresolved_conflicts=len(unresolved), missing_fields=len(val.missing),
                                abstained=rec.abstained, field_confidence=conf, prior_rejection=prior_rejection,
                                revision_after_approval=revision_after_approval,
-                               possible_duplicates=[r["id"] for r in intake_meta.get("related_cases", [])]))
+                               possible_duplicates=[r["id"] for r in intake_meta.get("related_cases", [])],
+                               field_disagreements=disagree, **sit))
     deadline = (keep_deadline or _deadline(facts, now)) if pol.requires_human else None
 
     async with db.pool.connection() as c:
@@ -433,7 +442,8 @@ async def analyze(case_id: str, *, resolutions: dict | None = None, exclude_acti
             await c.execute("INSERT INTO policy_decisions(case_id,version,requires_human,rules_fired,inputs) VALUES (%s,%s,%s,%s,%s)",
                             (case_id, version, pol.requires_human, Jsonb(pol.rules),
                              Jsonb({"amount": rec.total_cost, "risk": rk.level, "degraded": degraded, "agent_conflict": rk.conflict,
-                                    "abstained": rec.abstained, "field_confidence": conf, "tiers": pol.tiers})))
+                                    "abstained": rec.abstained, "field_confidence": conf, "tiers": pol.tiers,
+                                    "field_disagreements": disagree, **sit})))
             await c.execute("UPDATE case_versions SET facts=%s WHERE case_id=%s AND version=%s", (Jsonb(facts), case_id, version))
             await agent_message(c, case_id, "risk", "recommend", "artifact", {"level": rk.level, "rule": rk.rule["level"],
                                                                               "llm": (rk.llm or {}).get("risk"), "conflict": rk.conflict})

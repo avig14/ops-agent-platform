@@ -124,11 +124,16 @@ export function PlanTab({ detail, user }: CaseTabProps) {
                     <th scope="row">
                       {humanize(o.action)} {o.action === rec.chosen_option ? <Chip tone="person">Chosen</Chip> : null}
                       {o.last_resort ? <span className="table__sub">Last resort</span> : null}
+                      {o.substitute ? <span className="table__sub">Different product</span> : null}
                     </th>
                     <td>{o.description}</td>
                     <td className="num">{o.units ?? "none"}</td>
                     <td className="num">{o.lead_time_days === null || o.lead_time_days === undefined ? "none" : `${o.lead_time_days} d`}</td>
-                    <td className="num">{fmtInr(o.additional_cost)}</td>
+                    <td className="num">
+                      {fmtInr(o.additional_cost)}
+                      {o.spend_basis === "new_purchase" ? <span className="table__sub">New purchase</span> : null}
+                      {o.spend_basis === "premium_over_po" ? <span className="table__sub">Premium over the open order</span> : null}
+                    </td>
                     <td>{yesNo(o.covers_shortfall)}</td>
                     <td>{yesNo(o.feasible_by_need)}</td>
                   </tr>

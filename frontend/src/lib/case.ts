@@ -54,7 +54,9 @@ export interface Signal {
 
 /** The three checks behind a confidence number, in plain words. */
 export function signalList(s: FieldRow["signals"]): Signal[] {
-  const v = (x: boolean | null | undefined): Signal["value"] => (x === true ? "yes" : x === false ? "no" : "n/a");
+  // The backend sends "agree" / "conflict" / "disagree" / "n/a" for the two comparisons and true/false for "grounded".
+  const v = (x: boolean | string | null | undefined): Signal["value"] =>
+    x === true || x === "agree" ? "yes" : x === false || x === "conflict" || x === "disagree" ? "no" : "n/a";
   return [
     { label: "Found in the message", value: v(s.grounded) },
     { label: "Rule check agrees", value: v(s.rule) },

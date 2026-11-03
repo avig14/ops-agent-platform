@@ -26,7 +26,8 @@ SYSTEM = (
     "Do not add links or e-mail addresses. Do not mention internal costs, budgets, approvals, risk or other suppliers. "
     "Return the new subject and the new body."
 )
-SUPPLIER_ACTIONS = ("expedite_alternate_supplier", "wait_for_original_supplier")
+SUPPLIER_ACTIONS = ("expedite_alternate_supplier", "order_from_supplier", "wait_for_original_supplier")
+ORDER_ACTIONS = ("expedite_alternate_supplier", "order_from_supplier")
 LIVE_STATES = ("APPROVED", "EXECUTING", "MONITORING")
 _NUMBER = re.compile(r"\d[\d,]*(?:\.\d+)?")
 _LINK = re.compile(r"https?://|www\.|[\w.+-]+@[\w-]+", re.I)
@@ -57,7 +58,7 @@ def stakeholder_template(case_id: str, store: str | None, opt: dict, cost: int) 
 
 def supplier_template(case_id: str, store: str | None, supplier: str, item: str, opt: dict, delay_days: int | None) -> tuple[str, str]:
     where = f" for our {store} store" if store else ""
-    if opt["action"] == "expedite_alternate_supplier":
+    if opt["action"] in ORDER_ACTIONS:
         ask = (f"We would like to order {opt['units']} x {item}{where}. Your listed lead time is {opt['lead_time_days']} day(s); "
                "please confirm availability, the delivery date and the order terms.")
         subject = f"Order request: {item} (ref {case_id})"
@@ -135,8 +136,8 @@ async def _load(case_id: str) -> dict | None:
 def _supplier_for(ctx: dict) -> dict | None:
     opt, facts = ctx["opt"], ctx["facts"]
     by_id = {s["id"]: s for s in ctx["suppliers"]}
-    if opt["action"] == "expedite_alternate_supplier":
-        return next((s for s in ctx["suppliers"] if s["name"] == opt.get("supplier")), None)
+    if opt["action"] in ORDER_ACTIONS:
+        return by_id.get(opt.get("supplier_id")) or next((s for s in ctx["suppliers"] if s["name"] == opt.get("supplier")), None)
     return by_id.get((facts.get("supplier") or {}).get("id"))
 
 

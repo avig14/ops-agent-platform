@@ -32,6 +32,12 @@ class PolicyInput:
     revision_after_approval: bool = False
     prior_rejection: bool = False
     possible_duplicates: list[str] = field(default_factory=list)     # ids of cases this one may repeat
+    field_disagreements: list[str] = field(default_factory=list)     # critical fields where two readers disagreed (AI-read only)
+    shortfall_unverified: bool = False      # a shortage/delay case whose shortfall could not be computed
+    shortfall_uncovered: bool = False       # a real shortfall that no option closes in time
+    escalation_chosen: bool = False         # the plan itself is "ask management"
+    date_unreadable: bool = False           # a need date was stated but code could not read it
+    substitute_chosen: bool = False         # the plan swaps the requested product for a different one
 
 
 @dataclass
@@ -43,6 +49,25 @@ class PolicyDecision:
 
     def as_json(self) -> dict:
         return {"requires_human": self.requires_human, "rules": self.rules, "tiers": self.tiers, "auto_clear": self.auto_clear}
+
+
+def situation_flags(facts: dict, chosen: dict | None) -> dict:
+    """Code-derived facts about the plan itself. They only ever ADD review: a free-looking plan that does not
+    actually solve the problem must not auto-clear."""
+    intent = facts.get("intent")
+    short = facts.get("shortfall")
+    needs_qty = intent in ("inventory_shortage", "delivery_delay")
+    uncovered = False
+    if short and short > 0:
+        ok = chosen is not None and bool(chosen.get("covers_shortfall") and chosen.get("feasible_by_need"))             and chosen.get("action") != "escalate_to_management"
+        uncovered = not ok
+    return {
+        "shortfall_unverified": bool(needs_qty and short is None),
+        "shortfall_uncovered": uncovered,
+        "escalation_chosen": bool(chosen and chosen.get("action") == "escalate_to_management"),
+        "date_unreadable": bool(facts.get("needed_by_unreadable")),
+        "substitute_chosen": bool(chosen and chosen.get("substitute")),
+    }
 
 
 def required_tiers(amount: float, risk_level: str) -> list[dict]:
@@ -94,6 +119,18 @@ def evaluate(p: PolicyInput) -> PolicyDecision:
         rule("POSSIBLE_DUPLICATE", "may repeat " + ", ".join(p.possible_duplicates) + "; a human must confirm it is a separate request")
     if p.prior_rejection:
         rule("PRIOR_REJECTION", "an approver rejected an earlier plan; the revised plan needs a human decision")
+    if p.field_disagreements:
+        rule("FIELD_DISAGREEMENT", "two readers of the request disagree on " + ", ".join(p.field_disagreements) + "; a human must confirm the value")
+    if p.shortfall_unverified:
+        rule("SHORTFALL_UNVERIFIED", "the shortfall could not be computed from the request and the systems of record")
+    if p.shortfall_uncovered:
+        rule("SHORTFALL_NOT_COVERED", "no option closes the shortfall before the need date")
+    if p.escalation_chosen:
+        rule("ESCALATION_RECOMMENDED", "the plan is to escalate; management must decide")
+    if p.date_unreadable:
+        rule("DATE_UNREADABLE", "a need date was stated but could not be read; timing is unverified")
+    if p.substitute_chosen:
+        rule("SUBSTITUTE_PRODUCT", "the plan swaps the requested product for a different one; the requester's agreement is a human decision")
 
     requires = bool(fired)
     tiers = required_tiers(p.amount, p.risk_level) if requires else []

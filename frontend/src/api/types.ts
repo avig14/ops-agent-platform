@@ -69,7 +69,15 @@ export interface FieldRow {
   value: string | null;
   quote: string | null;
   confidence: number;
-  signals: { rule?: boolean | null; grounded?: boolean | null; second_opinion?: boolean | null };
+  signals: {
+    rule?: boolean | string | null;
+    grounded?: boolean | null;
+    second_opinion?: boolean | string | null;
+    rule_value?: string | null;
+    second_value?: string | null;
+    is_shortfall?: boolean;
+    human?: boolean;
+  };
   state: FieldState;
 }
 
@@ -128,6 +136,12 @@ export interface Option {
   supplier?: string | null;
   item?: string | null;
   last_resort?: boolean;
+  /** A different product from the one requested. */
+  substitute?: boolean;
+  /** What the cost figure is: a whole new purchase, a price premium over an open PO, or freight. */
+  spend_basis?: "new_purchase" | "premium_over_po" | string;
+  unit_price?: number;
+  supplier_id?: string | null;
 }
 
 export interface RiskEvidence {

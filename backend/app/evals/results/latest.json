@@ -13,7 +13,7 @@
  "provenance": {
   "api_calls_this_run": 0,
   "dataset_hash": "9abd43ecbc25",
-  "generated_at": "2026-11-03T17:56:32+00:00",
+  "generated_at": "2026-11-03T23:41:02+00:00",
   "git_sha": null,
   "models_in_recording": [
    "gemini-3.5-flash",
@@ -72,7 +72,7 @@
         "correct": 44,
         "hi": 0.8,
         "lo": 0.55,
-        "mean_confidence": 0.734088888888889,
+        "mean_confidence": 0.7420444444444444,
         "n": 45
        },
        {
@@ -89,7 +89,7 @@
         "n": 109
        }
       ],
-      "brier": 0.024666649350649352,
+      "brier": 0.023088194805194806,
       "n": 154,
       "note": "confidence is a heuristic (agreement of independent signals), not a probability",
       "risk_coverage": [
@@ -1231,7 +1231,7 @@
          "verdict": "tp"
         },
         "item": {
-         "confidence": 0.571,
+         "confidence": 0.75,
          "drop": null,
          "gold": "checkout counters",
          "got": "checkout counters",
@@ -1595,7 +1595,7 @@
          "verdict": "tp"
         },
         "item": {
-         "confidence": 0.571,
+         "confidence": 0.75,
          "drop": null,
          "gold": [
           "modular fixtures",
@@ -2175,7 +2175,7 @@
         "correct": 25,
         "hi": 0.8,
         "lo": 0.55,
-        "mean_confidence": 0.727423076923077,
+        "mean_confidence": 0.7411923076923077,
         "n": 26
        },
        {
@@ -2192,7 +2192,7 @@
         "n": 128
        }
       ],
-      "brier": 0.01634495454545455,
+      "brier": 0.014766500000000004,
       "n": 154,
       "note": "confidence is a heuristic (agreement of independent signals), not a probability",
       "risk_coverage": [
@@ -3334,7 +3334,7 @@
          "verdict": "tp"
         },
         "item": {
-         "confidence": 0.571,
+         "confidence": 0.75,
          "drop": null,
          "gold": "checkout counters",
          "got": "checkout counters",
@@ -3698,7 +3698,7 @@
          "verdict": "tp"
         },
         "item": {
-         "confidence": 0.571,
+         "confidence": 0.75,
          "drop": null,
          "gold": [
           "modular fixtures",
@@ -4269,17 +4269,17 @@
         "n": 0
        },
        {
-        "accuracy": 0.9739130434782609,
+        "accuracy": 0.9823008849557522,
         "band": "confirm",
         "ci95": [
-         0.9261,
-         0.9911
+         0.9378,
+         0.9951
         ],
-        "correct": 112,
+        "correct": 111,
         "hi": 0.8,
         "lo": 0.55,
-        "mean_confidence": 0.6000000000000005,
-        "n": 115
+        "mean_confidence": 0.6000000000000006,
+        "n": 113
        },
        {
         "accuracy": null,
@@ -4292,28 +4292,28 @@
         "n": 0
        }
       ],
-      "brier": 0.16521739130434793,
-      "n": 115,
+      "brier": 0.16353982300884964,
+      "n": 113,
       "note": "confidence is a heuristic (agreement of independent signals), not a probability",
       "risk_coverage": [
        {
         "ci95": [
-         0.9261,
-         0.9911
+         0.9378,
+         0.9951
         ],
         "coverage": 1.0,
-        "kept": 115,
-        "precision": 0.9739130434782609,
+        "kept": 113,
+        "precision": 0.9823008849557522,
         "threshold": 0.0
        },
        {
         "ci95": [
-         0.9261,
-         0.9911
+         0.9378,
+         0.9951
         ],
         "coverage": 1.0,
-        "kept": 115,
-        "precision": 0.9739130434782609,
+        "kept": 113,
+        "precision": 0.9823008849557522,
         "threshold": 0.55
        },
        {
@@ -5431,11 +5431,11 @@
          "verdict": "tp"
         },
         "item": {
-         "confidence": 0.6,
+         "confidence": null,
          "drop": null,
          "gold": "checkout counters",
-         "got": "units",
-         "verdict": "wrong"
+         "got": null,
+         "verdict": "fn"
         },
         "location": {
          "confidence": null,
@@ -5795,14 +5795,14 @@
          "verdict": "fn"
         },
         "item": {
-         "confidence": 0.6,
+         "confidence": null,
          "drop": null,
          "gold": [
           "modular fixtures",
           "units of modular fixtures"
          ],
-         "got": "units",
-         "verdict": "tp"
+         "got": null,
+         "verdict": "fn"
         },
         "location": {
          "confidence": 0.6,
@@ -6232,14 +6232,14 @@
      },
      "not_scored": [],
      "overall": {
-      "f1": 0.8296296296296296,
-      "fn": 43,
-      "fp": 3,
-      "precision": 0.9739130434782609,
-      "recall": 0.7225806451612903,
+      "f1": 0.8283582089552238,
+      "fn": 44,
+      "fp": 2,
+      "precision": 0.9823008849557522,
+      "recall": 0.7161290322580646,
       "tn": 70,
-      "tp": 112,
-      "wrong": 3
+      "tp": 111,
+      "wrong": 2
      },
      "per_field": {
       "additional_cost": {
@@ -6273,14 +6273,14 @@
        "wrong": 0
       },
       "item": {
-       "f1": 0.8292682926829269,
-       "fn": 5,
-       "fp": 2,
-       "precision": 0.8947368421052632,
-       "recall": 0.7727272727272727,
+       "f1": 0.8205128205128205,
+       "fn": 6,
+       "fp": 1,
+       "precision": 0.9411764705882353,
+       "recall": 0.7272727272727273,
        "tn": 1,
-       "tp": 17,
-       "wrong": 2
+       "tp": 16,
+       "wrong": 1
       },
       "location": {
        "f1": 0.8333333333333333,
@@ -6334,22 +6334,22 @@
       }
      },
      "precision_ci95": [
-      0.9261,
-      0.9911
+      0.9378,
+      0.9951
      ],
      "recall_ci95": [
-      0.6474,
-      0.787
+      0.6406,
+      0.7812
      ],
      "scored": 26,
      "wrong_value": {
       "ci95": [
-       0.0089,
-       0.0739
+       0.0049,
+       0.0622
       ],
-      "k": 3,
-      "n": 115,
-      "rate": 0.02608695652173913
+      "k": 2,
+      "n": 113,
+      "rate": 0.017699115044247787
      }
     }
    }

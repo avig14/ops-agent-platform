@@ -43,7 +43,7 @@ Intent = Literal["delivery_delay", "inventory_shortage", "supplier_issue", "urge
                  "cancellation", "status_update", "other", "unclear"]
 RiskLevel = Literal["Low", "Medium", "High", "Critical"]
 RISK_ORDER = {"Low": 0, "Medium": 1, "High": 2, "Critical": 3}
-ActionType = Literal["expedite_alternate_supplier", "partial_launch_reallocate", "transfer_from_other_store",
+ActionType = Literal["expedite_alternate_supplier", "order_from_supplier", "partial_launch_reallocate", "transfer_from_other_store",
                      "wait_for_original_supplier", "reschedule_launch", "escalate_to_management", "no_action"]
 
 

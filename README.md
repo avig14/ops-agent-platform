@@ -19,7 +19,7 @@ training.
 | --- | --- |
 | priya.requester@demo.test, karthik.requester@demo.test | Requester (store ops) |
 | rahul.manager@demo.test, sneha.manager@demo.test | Ops manager (approves up to INR 50,000) |
-| anita.regional@demo.test | Regional head (up to INR 5,00,000) |
+| anita.regional@demo.test (West), meera.regional@demo.test (South) | Regional head (up to INR 5,00,000, own region only) |
 | vikram.finance@demo.test | Finance director (above INR 5,00,000, together with the regional head) |
 | admin@demo.test | Platform admin (system health, evaluations, chaos and clock controls) |
 
@@ -62,7 +62,7 @@ The app still works without `GEMINI_API_KEY`. Extraction falls back to a rule-ba
 ### Tests
 
 ```bash
-cd backend && .venv/Scripts/python -m pytest        # 431 tests, needs the dev Postgres (frontend: 223 vitest tests)
+cd backend && .venv/Scripts/python -m pytest        # 607 tests, needs the dev Postgres (frontend: 224 vitest tests)
 cd frontend && npm run typecheck && npm run lint && npm test && npm run build
 ```
 

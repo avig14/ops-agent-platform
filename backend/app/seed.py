@@ -19,6 +19,7 @@ USERS = [
     ("u-mgr-west", "rahul.manager@demo.test", "Rahul Mehta (Ops Manager, West)", "manager", "West"),
     ("u-mgr-south", "sneha.manager@demo.test", "Sneha Iyer (Ops Manager, South)", "manager", "South"),
     ("u-rh-west", "anita.regional@demo.test", "Anita Desai (Regional Head, West)", "regional_head", "West"),
+    ("u-rh-south", "meera.regional@demo.test", "Meera Krishnan (Regional Head, South)", "regional_head", "South"),
     ("u-fin", "vikram.finance@demo.test", "Vikram Shah (Finance Director)", "finance_director", None),
     ("u-admin", "admin@demo.test", "Platform Admin", "admin", None),
 ]

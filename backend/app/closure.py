@@ -47,8 +47,8 @@ async def _plan(c, case_id: str) -> dict | None:
                                   "ORDER BY id DESC LIMIT 1", (case_id,))).fetchone()
 
 
-def _item(key: str, *, kind: str, required: bool, done: bool, detail: str, row: dict | None = None) -> dict:
-    return {"key": key, "label": LABELS[key], "kind": kind, "required": required, "done": done, "detail": detail,
+def _item(key: str, *, kind: str, required: bool, done: bool, detail: str, row: dict | None = None, label: str | None = None) -> dict:
+    return {"key": key, "label": label or LABELS[key], "kind": kind, "required": required, "done": done, "detail": detail,
             "by": row["done_by"] if row else None, "by_name": row["done_by_name"] if row else None,
             "at": row["done_at"] if row else None, "note": row["note"] if row else None}
 
@@ -57,6 +57,10 @@ async def checklist(c, case: dict) -> dict:
     """Work out the closure checklist from the database. `c` is any connection (use the locked txn when closing)."""
     cid, epoch = case["id"], case["reopen_count"]
     rec = await _plan(c, cid)
+    humans = 0
+    if rec:
+        humans = (await (await c.execute("SELECT count(*) n FROM approvals WHERE recommendation_id=%s AND status='approved'",
+                                         (rec["id"],))).fetchone())["n"]
     msgs = await (await c.execute(
         "SELECT kind, status, reviewed_by FROM outbox WHERE case_id=%s AND kind IN ('stakeholder_update','supplier_request') "
         "AND starts_with(message_id, %s)", (cid, f"comm-{cid}-{rec['id']}-" if rec else "comm-none-"))).fetchall()
@@ -74,7 +78,9 @@ async def checklist(c, case: dict) -> dict:
 
     items = [
         _item("plan_approved", kind="derived", required=True, done=rec is not None,
-              detail=f"approved plan: {rec['chosen_option']}" if rec else "no approved plan on this case"),
+              label=None if (rec is None or humans > 0) else "Plan cleared by policy (no approval was needed)",
+              detail=(f"approved plan: {rec['chosen_option']}" if humans > 0 else f"plan cleared by policy, no human approval was required: {rec['chosen_option']}")
+              if rec else "no approved plan on this case"),
         _item("stakeholders_informed", kind="derived", required=True, done=sent > 0 and stuck == 0,
               detail=f"{sent} delivered, {stuck} not delivered yet" if stake else "no stakeholder update has been written yet"),
     ]

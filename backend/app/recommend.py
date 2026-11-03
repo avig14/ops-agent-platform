@@ -43,6 +43,17 @@ class Recommendation:
     risks_of_choice: list[str] = field(default_factory=list)
 
 
+def vendor_stock(facts: dict, supplier_id: str | None) -> tuple[int, int | None]:
+    """Units a supplier holds for the requested item, read from its own `Vendor-<NAME>-stock` snapshot rows.
+    SUP-BRIGHT matches `Vendor-BRIGHT-stock`. Returns (units, age of the oldest snapshot in seconds); (0, None) when unknown."""
+    token = (supplier_id or "").lower().removeprefix("sup-").strip()
+    if not token:
+        return 0, None
+    rows = [r for r in facts.get("inventory", [])
+            if str(r.get("location", "")).lower().startswith("vendor-") and token in re.split(r"[^a-z0-9]+", str(r["location"]).lower())]
+    return sum(max(int(r.get("on_hand") or 0), 0) for r in rows), (max((r.get("age_s") or 0) for r in rows) if rows else None)
+
+
 def candidates(facts: dict) -> list[dict]:
     short = facts.get("shortfall") or 0
     need = facts.get("days_to_need")
@@ -53,20 +64,59 @@ def candidates(facts: dict) -> list[dict]:
     def feasible(lead: int | None) -> bool:
         return need is None or lead is None or lead <= need
 
+    po = facts.get("po") or {}
+    # Spend basis. With an open PO the goods are already budgeted, so a replacement only adds the price premium. With no PO
+    # nothing is budgeted: buying is a NEW purchase and the whole purchase value is spend the approval ladder must see.
     alts = sorted([a for a in facts.get("alternatives", []) if a["stock"] > 0], key=lambda a: a["lead_time_days"])
     if alts and short > 0:
         a = alts[0]
         units = min(short, a["stock"])
-        premium = max(a["unit_cost"] - item.get("unit_cost", a["unit_cost"]), 0)
-        out.append({"action": "expedite_alternate_supplier", "supplier": a["supplier_name"], "item": a["name"], "units": units,
-                    "additional_cost": int(round(units * premium)), "lead_time_days": a["lead_time_days"],
-                    "feasible_by_need": feasible(a["lead_time_days"]), "covers_shortfall": units >= short,
-                    "description": f"Buy {units} x {a['name']} from {a['supplier_name']} (premium INR {int(premium)}/unit)"})
+        if po:
+            premium = max(a["unit_cost"] - item.get("unit_cost", a["unit_cost"]), 0)
+            cost, basis = int(round(units * premium)), "premium_over_po"
+            how = f"premium INR {int(premium)}/unit"
+        else:
+            cost, basis = int(round(units * a["unit_cost"])), "new_purchase"
+            how = f"INR {int(a['unit_cost'])}/unit, new purchase INR {cost:,}"
+        out.append({"action": "expedite_alternate_supplier", "supplier": a["supplier_name"], "supplier_id": a.get("supplier_id"),
+                    "item": a["name"], "units": units, "unit_price": int(a["unit_cost"]), "additional_cost": cost, "spend_basis": basis,
+                    "lead_time_days": a["lead_time_days"], "feasible_by_need": feasible(a["lead_time_days"]),
+                    "covers_shortfall": units >= short, "substitute": True,
+                    "description": f"Buy {units} x {a['name']} (a different product from the one requested) from {a['supplier_name']} ({how})"})
+    # Same product, straight from the supplier that holds stock for it. Only when nothing is on order and the supplier is not
+    # the one causing the problem (a delay or supplier issue is about THAT supplier, so re-ordering from them is no fix).
+    if (short > 0 and not po and not delay and facts.get("intent") not in ("delivery_delay", "supplier_issue")
+            and (item.get("unit_cost") or 0) > 0):
+        best = None
+        seen: set[str] = set()
+        for s in (facts.get("supplier"), facts.get("item_supplier")):
+            if not s or not s.get("id") or s["id"] in seen:
+                continue
+            seen.add(s["id"])
+            stock, age = vendor_stock(facts, s["id"])
+            if stock > 0:
+                key = (0 if stock >= short else 1, s.get("lead_time_days") or 0)
+                if best is None or key < best[0]:
+                    best = (key, s, stock, age)
+        if best:
+            _, s, stock, age = best
+            units = min(short, stock)
+            price = int(round(item["unit_cost"]))
+            cost = int(round(units * item["unit_cost"]))
+            lead = s.get("lead_time_days")
+            out.append({"action": "order_from_supplier", "supplier": s["name"], "supplier_id": s["id"], "item": item.get("name"),
+                        "units": units, "unit_price": price, "additional_cost": cost, "spend_basis": "new_purchase",
+                        "lead_time_days": lead, "feasible_by_need": feasible(lead), "covers_shortfall": units >= short,
+                        "substitute": False, "stock_age_s": age,
+                        "description": f"Order {units} x {item.get('name')} from {s['name']} (INR {price}/unit, new purchase INR {cost:,}; "
+                                       f"{stock} in stock at the supplier)"})
     home = None
     store = facts.get("store") or {}
     if store:
         home = f"Warehouse-{store.get('region')}"
-    movable = [r for r in facts.get("inventory", []) if r["location"] != home and not r["location"].startswith("Vendor-") and r["on_hand"] > 0]
+    own = f"Store-{store.get('id')}" if store.get("id") else None      # stock already at the requesting store cannot be moved to it
+    movable = [r for r in facts.get("inventory", []) if r["location"] not in (home, own) and not r["location"].startswith("Vendor-")
+               and r["on_hand"] > 0]
     movable_units = sum(r["on_hand"] for r in movable)
     if movable_units and short > 0:
         units = min(short, movable_units)
@@ -79,9 +129,19 @@ def candidates(facts: dict) -> list[dict]:
         out.append({"action": "partial_launch_reallocate", "units": min(reach, facts.get("qty_ordered") or reach),
                     "additional_cost": 0, "lead_time_days": 0, "feasible_by_need": True, "covers_shortfall": False,
                     "description": f"Open on time with {min(reach, facts.get('qty_ordered') or reach)} units; remainder follows the delayed shipment"})
-    out.append({"action": "wait_for_original_supplier", "units": short, "additional_cost": 0, "lead_time_days": delay,
-                "feasible_by_need": feasible(delay), "covers_shortfall": True,
-                "description": f"Wait for the original supplier ({delay} day delay)"})
+    po = facts.get("po") or {}
+    # Waiting is only an option when there is a supplier shipment to wait for. With no delay stated and no open PO there is
+    # nothing to wait for, so offering it as a free "fix" would hide the shortage.
+    if facts.get("shortfall") == 0 and not delay and not po:
+        out.append({"action": "wait_for_original_supplier", "units": 0, "additional_cost": 0, "lead_time_days": 0, "feasible_by_need": True,
+                    "covers_shortfall": True, "description": "No shortfall: stock already covers the request, so nothing to buy; keep monitoring"})
+    elif delay > 0 or po:
+        wait_ok = feasible(delay)
+        if not delay and po.get("promised_date") and facts.get("needed_by"):
+            wait_ok = str(po["promised_date"])[:10] <= str(facts["needed_by"])[:10]
+        out.append({"action": "wait_for_original_supplier", "units": short, "additional_cost": 0, "lead_time_days": delay,
+                    "feasible_by_need": wait_ok, "covers_shortfall": True,
+                    "description": f"Wait for the original supplier ({delay} day delay)" if delay else "Wait for the open purchase order to arrive"})
     if (facts.get("launch_gap_days") or 0) > 0:
         out.append({"action": "reschedule_launch", "units": short, "additional_cost": 0,
                     "lead_time_days": facts.get("launch_gap_days"), "feasible_by_need": True, "covers_shortfall": True,
@@ -97,8 +157,10 @@ def _effective(o: dict) -> bool:
 
 
 def _rank_key(o: dict):
-    # effective first (covers shortfall in time), then cheapest, then fastest; last-resort options sink
-    return (1 if o.get("last_resort") else 0, 0 if _effective(o) else 1, o["additional_cost"], o["lead_time_days"] or 0)
+    # effective first (covers shortfall in time); the requested product beats a substitute (swapping the product is a business
+    # decision, not a cost saving); then cheapest, then fastest; last-resort options sink
+    return (1 if o.get("last_resort") else 0, 0 if _effective(o) else 1, 1 if o.get("substitute") else 0,
+            o["additional_cost"], o["lead_time_days"] or 0)
 
 
 def deterministic_choice(opts: list[dict], zero_cost_only: bool) -> str:
@@ -109,7 +171,8 @@ def deterministic_choice(opts: list[dict], zero_cost_only: bool) -> str:
     eff = [o for o in pool if _effective(o)]
     if eff:
         return sorted(eff, key=_rank_key)[0]["action"]
-    return sorted(pool, key=lambda o: (0 if o["feasible_by_need"] else 1, -(o["units"] or 0), o["additional_cost"]))[0]["action"]
+    return sorted(pool, key=lambda o: (0 if o["feasible_by_need"] else 1, -(o["units"] or 0), 1 if o.get("substitute") else 0,
+                                       o["additional_cost"]))[0]["action"]
 
 
 def allowed_numbers(facts: dict, opts: list[dict]) -> set[Decimal]:
@@ -122,7 +185,7 @@ def allowed_numbers(facts: dict, opts: list[dict]) -> set[Decimal]:
     for r in facts.get("inventory", []):
         nums.add(Decimal(r["on_hand"]))
     for o in opts:
-        for k in ("units", "additional_cost", "lead_time_days"):
+        for k in ("units", "additional_cost", "lead_time_days", "unit_price"):
             if o.get(k) is not None:
                 nums.add(Decimal(int(o[k])))
     for a in facts.get("alternatives", []):
@@ -166,6 +229,8 @@ def numbers_ok(text: str, allowed: set[Decimal], free_upto: int = 10, dates: set
 
 
 def sufficiency(facts: dict, inputs_used: int, inputs_total: int, degraded: bool) -> str:
+    if facts.get("shortfall") is None and facts.get("intent") in ("inventory_shortage", "delivery_delay"):
+        return "Low"      # cannot size the problem, so cannot cost a fix: ask a human
     checks = [facts.get("shortfall") is not None, facts.get("days_to_need") is not None, bool(facts.get("alternatives")),
               not facts.get("unresolved_conflicts"), not facts.get("missing"), not degraded, inputs_used >= inputs_total - 2]
     ok = sum(checks)
@@ -179,9 +244,12 @@ def template_rationale(facts: dict, chosen: dict) -> str:
         parts.append(f"Shortfall is {short} units" + (f" with {need} day(s) to the need date" if need is not None else "") + ".")
     parts.append(f"{chosen['description']}.")
     if chosen["additional_cost"]:
-        parts.append(f"Additional cost INR {chosen['additional_cost']}.")
+        label = "New purchase cost" if chosen.get("spend_basis") == "new_purchase" else "Additional cost"
+        parts.append(f"{label} INR {chosen['additional_cost']}.")
     else:
         parts.append("No additional spend.")
+    if chosen.get("substitute"):
+        parts.append("This is a different product from the one requested, so the requester must agree to the swap.")
     return " ".join(parts)
 
 
@@ -212,6 +280,16 @@ async def recommend(facts: dict, inputs_used: int, inputs_total: int, degraded: 
                 gate_events.append(Reason.GATE_BAD_ACTION.value)
                 await audit.write(case_id, "agent", "recommend", "gate_reject", "blocked",
                                   f"LLM chose action outside candidates: {r.data.recommended_action}", reason=Reason.GATE_BAD_ACTION)
+            elif (pick := next(o for o in opts if o["action"] == r.data.recommended_action)) and (
+                    (not pick["feasible_by_need"] and any(_effective(o) for o in opts))
+                    or (pick.get("substitute") and any(_effective(o) and not o.get("substitute") for o in opts))):
+                # an option that cannot arrive in time is wrong while one that can exists, and swapping the product is wrong
+                # while the requested product can be had in time: code overrides the model
+                gate_events.append(Reason.GATE_BAD_ACTION.value)
+                why = ("is a different product while the requested one can be had in time" if pick.get("substitute") and pick["feasible_by_need"]
+                       else "cannot arrive before the need date while a feasible option exists")
+                await audit.write(case_id, "agent", "recommend", "gate_reject", "blocked",
+                                  f"LLM chose {pick['action']}, which {why}; using the code's choice", reason=Reason.GATE_BAD_ACTION)
             else:
                 chosen_action = r.data.recommended_action
                 ranking = [a for a in r.data.ranking if a in allowed_actions] or ranking

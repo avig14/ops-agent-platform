@@ -94,6 +94,7 @@ def to_decimal(value: str | None) -> Decimal | None:
 
 # ───────────────────────── rule-based extractor ─────────────────────────
 _UNIT = r"(?:units?|pieces?|pcs|items?|panels?|shelves|shelf|racks?|fixtures?|boxes|cartons?|sets?)"
+_COUNT_WORD = r"(?:units?|pieces?|pcs|items?|sets?)"      # names a count, never a product (racks, panels, shelves are products)
 _RULES: dict[str, re.Pattern] = {
     "delay_days": re.compile(r"(?:delay(?:ed)?|late|postponed|pushed)\b[^.\n]{0,25}?\b(\d{1,3})\s*(?:calendar\s+|working\s+)?days?\b", re.I),
     "quantity_available": re.compile(r"(?:only\s+)?(\d[\d,]*)\s+(?:\w+\s+)?" + _UNIT + r"\s+(?:are\s+|is\s+)?(?:currently\s+|now\s+)?(?:available|in stock|on hand|in (?:the )?warehouse)", re.I),
@@ -124,7 +125,9 @@ def rule_extract(text: str) -> dict[str, tuple[str, str]]:
                     continue
                 m = nxt
                 value, quote = m.group(1).strip(), m.group(0).strip()
-            found["item"] = (re.sub(r"\s+", " ", m.group(2)).strip(), m.group(2).strip())
+            item_txt = re.sub(r"\s+", " ", m.group(2)).strip()
+            if not re.fullmatch(_COUNT_WORD, item_txt, re.I):      # a bare "units" names no product, so it must not out-vote the AI's item
+                found["item"] = (item_txt, m.group(2).strip())
         found[name] = (value, quote)
     return found
 
@@ -216,6 +219,8 @@ def confidence(grounded_ok: bool, rule: str | None, second: str | None, name: st
     if second_has:
         ok = agree(name, value, second)
         sig["second_opinion"] = "agree" if ok else "disagree"
+        if not ok:
+            sig["second_value"] = second
         num += 0.3 * ok
         den += 0.3
         avail += 1
@@ -224,6 +229,8 @@ def confidence(grounded_ok: bool, rule: str | None, second: str | None, name: st
     if rule_has:
         ok = agree(name, value, rule)
         sig["rule"] = "agree" if ok else "conflict"
+        if not ok:
+            sig["rule_value"] = rule
         num += 0.3 * ok
         den += 0.3
         avail += 1
@@ -233,6 +240,32 @@ def confidence(grounded_ok: bool, rule: str | None, second: str | None, name: st
     if avail < 2:
         score = min(score, 0.75)
     return round(score, 3), sig
+
+
+_SHORT_WORDING = re.compile(
+    r"\b(?:short(?:fall|age)?(?:\s+(?:of|by))?|missing|lacking|need(?:ed|s)?\s+(?:an?\s+)?(?:\d[\d,]*\s+)?(?:extra|additional|more)|(?:extra|additional|more)\s+needed|"
+    r"deficit|gap\s+of)\b", re.I)
+_NEGATED = re.compile(r"\b(?:no|not|zero|without|never)\s+(?:\w+\s+){0,2}short(?:fall|age)?\b", re.I)
+
+
+def shortfall_wording(quote: str | None) -> bool:
+    """True when the quoted amount is a gap ("30 units short"), not the total ordered. Code, not the model, decides."""
+    if not quote or _NEGATED.search(quote):
+        return False
+    return bool(_SHORT_WORDING.search(quote))
+
+
+def disagreements(fields: dict) -> list[str]:
+    """Critical fields where the model, the second opinion or the rule reader disagreed. Human-set values never count."""
+    from .policy import CRITICAL_FIELDS
+    out = []
+    for name in CRITICAL_FIELDS:
+        f = fields.get(name)
+        if f is None or not f.usable or f.signals.get("human"):
+            continue
+        if f.signals.get("rule") == "conflict" or f.signals.get("second_opinion") == "disagree":
+            out.append(name)
+    return out
 
 
 def _tainted(clean: str, clean_scan: safety.Scan, quote: str | None) -> bool:
@@ -265,6 +298,8 @@ def _issue_fields(issue: IntakeIssue, clean: str, clean_scan: safety.Scan, rules
         r = (rules or {}).get(name)
         s = getattr(second, name).value if second is not None else None
         f.confidence, f.signals = confidence(True, r[0] if r else None, s, name, fv.value, r is not None, s is not None)
+        if name == "quantity_affected" and shortfall_wording(fv.quote):
+            f.signals["is_shortfall"] = True
         out[name] = f
     return out
 
@@ -280,7 +315,8 @@ def _fields_from_rules(rules: dict[str, tuple[str, str]], clean: str, clean_scan
             out[name] = Field(name, None, r[1], state="dropped", drop_reason=Reason.INJECTION_DETECTED)
             drops.append({"field": name, "reason": Reason.INJECTION_DETECTED.value, "value": r[0], "quote": r[1][:120]})
         else:
-            out[name] = Field(name, r[0], r[1], confidence=0.6, signals={"grounded": True, "source": "rules_only"})
+            out[name] = Field(name, r[0], r[1], confidence=0.6, signals={"grounded": True, "source": "rules_only",
+                                                                         **({"is_shortfall": True} if name == "quantity_affected" and shortfall_wording(r[1]) else {})})
     return out
 
 

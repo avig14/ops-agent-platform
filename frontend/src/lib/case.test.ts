@@ -87,6 +87,11 @@ describe("signalList", () => {
       { label: "Second opinion agrees", value: "n/a" },
     ]);
   });
+  it("reads the words the backend actually sends", () => {
+    const s = signalList({ grounded: true, rule: "conflict", second_opinion: "agree" });
+    expect(s.map((x) => x.value)).toEqual(["yes", "no", "yes"]);
+    expect(signalList({ rule: "disagree", second_opinion: "n/a" }).map((x) => x.value)).toEqual(["n/a", "no", "n/a"]);
+  });
   it("treats null as n/a", () => {
     expect(signalList({ grounded: null, rule: null, second_opinion: null }).every((x) => x.value === "n/a")).toBe(true);
   });

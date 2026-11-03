@@ -106,6 +106,12 @@ export const POLICY_RULE: Record<string, string> = {
   REVISION_AFTER_APPROVAL: "A supplier changed the facts after approval; earlier approvals no longer hold.",
   POSSIBLE_DUPLICATE: "It may repeat an earlier request; a person must confirm.",
   PRIOR_REJECTION: "An approver rejected an earlier plan; the revised plan needs a decision.",
+  FIELD_DISAGREEMENT: "Two readers of the request disagree on a key value; a person confirms it.",
+  SHORTFALL_UNVERIFIED: "The shortfall could not be worked out, so the plan cannot be trusted yet.",
+  SHORTFALL_NOT_COVERED: "No option closes the shortfall before the need date.",
+  ESCALATION_RECOMMENDED: "The plan is to escalate, so management must decide.",
+  DATE_UNREADABLE: "A need date was given but could not be read, so timing is unverified.",
+  SUBSTITUTE_PRODUCT: "The plan swaps the requested product for a different one; that needs a person's agreement.",
 };
 
 /** What each code in a recommendation's `gate_events` means (codes from backend/app/codes.py and recommend.py). */

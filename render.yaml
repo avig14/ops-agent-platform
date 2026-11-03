@@ -1,0 +1,31 @@
+# Render Blueprint. One free Docker web service. The database is Neon (external), not Render Postgres:
+# Render free Postgres expires after 30 days, Neon free does not.
+# Fields checked against https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: ops-agent-platform
+    runtime: docker
+    plan: free
+    region: singapore            # same region as the Neon project (ap-southeast-1)
+    branch: main
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /health     # no database call, so a ping never wakes Neon
+    autoDeployTrigger: commit
+    envVars:
+      - key: APP_ENV
+        value: prod
+      - key: JWT_SECRET
+        generateValue: true      # random 256-bit value, created once
+      - key: LOOP_IDLE_S
+        value: "900"             # idle sweeps every 15 min so Neon can scale to zero
+      - key: LOOP_INTERVAL_S
+        value: "5"
+      - key: ENABLE_CHAOS
+        value: "1"               # demo switches on the Admin page. Set to 0 for real use.
+      - key: ENABLE_CLOCK_OFFSET
+        value: "1"
+      - key: DATABASE_URL
+        sync: false              # Neon DIRECT (non-pooled) string, with ?sslmode=require. Asked once at creation.
+      - key: GEMINI_API_KEY
+        sync: false
